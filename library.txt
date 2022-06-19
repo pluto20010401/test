@@ -1,0 +1,258 @@
+create database library;
+use library;
+create table admin(
+id int(11) primary key,
+username varchar(10) not null,
+password varchar(11) not null
+);
+create table reader_type(
+typeid int(11) primary key,
+typename varchar(20) not null,
+demo varchar(100)
+);
+create table reader(
+readerid int(11) primary key,
+name varchar(10) not null,
+telephone varchar(15),
+email varchar(30),
+dept varchar(20),
+Permissions int(1) check(Permissions=0 or Permissions=1),
+readertype int(11) references reader_type(typeid),
+demo varchar(1000)
+);
+create table book_type(
+typeid int(11) primary key,
+typename varchar(20) not null,
+demo varchar(100)
+);
+create table book(
+bookid int(11) primary key,
+bookname varchar(20) not null,
+author1 varchar(20) not null,
+author2 varchar(20),
+author3 varchar(20),
+pubdate date,
+publish varchar(30),
+photo varchar(100),
+abstract varchar(4000),
+price numeric(7,2) not null,
+isbn varchar(17) not null,
+bookclass int(11) references book_class(classid),
+booktype int(11) references book_type(typeid)
+);
+create table borrow(
+readerid int(11),
+bookid int(11),
+borrowdate date,
+due date,
+primary key(readerid,bookid),
+foreign key (readerid) references reader(readerid),
+foreign key (bookid) references book(bookid)
+);
+create table preconcert(
+readerid int(11),
+bookid int(11),
+predate date,
+primary key(readerid,bookid),
+foreign key (readerid) references reader(readerid),
+foreign key (bookid) references book(bookid)
+);
+create table rule(
+booktype int(11),
+readertype int(11),
+days int(5) not null,
+num int(5) not null,
+renew int(5) not null,
+overtime numeric(5,2) not null,
+primary key(booktype,readertype),
+foreign key (booktype) references book_type(typeid),
+foreign key (readertype) references reader_type(typeid)
+);delimiter # 
+/*方便自动产生连续的读者编号、图书编号、读者类型编号、藏书类型编号、管理员编号等字段分别用下列序列产生相应的编号*/
+create sequence seq_reader start with 1 increment by 1;
+create sequence seq_book start with 1 increment by 1;
+create sequence seq_reader_type start with 1 increment by 1;
+create sequence seq_book_type start with 1 increment by 1;
+create sequence seq_book_class start with 1 increment by 1;
+create sequence seq_admin start with 1 increment by 1;
+
+CREATE OR REPLACE VIEW reader_book_view
+AS
+SELECT name,bookname,borrowdate,due,last_due  from readet,book,borrow
+where reader.teadid=borrow.readid AND borrow.bookid=book.bookid;
+CREATE OR REPLACE VIEW book_type_stat_view
+AS
+SELECT booktype,COUNT(booktype)  FROM (
+SELECT readerid,borrow.booktype,booktype,borrowdate,due,last_due
+from borrow,book where book.bookid=borrow.bookid);
+DELIMITER // 
+/*检查借阅是否超期的存储过程*/
+Create or replace procedure p_days_from_due(v_readerid int,v_bookid int,v_days out int)
+As
+Begin
+Select due –sysdate into v_days from borrow where readerid=v_readerid and bookid=v_bookid;
+Exception
+When others then
+v_days:=0;
+End;
+DELIMITER ;
+DELIMITER // 
+/*.判断读者可否进行借阅的存储过程*/
+Create or replace procedure p_can_borrow(v_readerid in int, v_bookid in int, v_num out int)
+As
+V_right int;
+V_borrowed_num int;
+V_rule_num int;
+Begin
+Select right into v_right from reader where readerid=v_readerid;
+v_borrowed_num:=f_borrowed_num(v_readerid,v_bookid);
+v_rule_num:=f_rule_num(v_readerid,v_bookid);
+If v_right=1 then v_num:=0;
+Else
+v_num:=v_rule_num-v_borrowed_num;
+End if;
+Exception
+ When others then
+   v_num:=0;
+End;
+DELIMITER ;
+DELIMITER // 
+/*计算超期罚款的存储过程；*/
+Create or replace procedure p_timeover_money(v_readerid int,v_bookid int,v_money out int)
+As
+V_days int;
+V_readertype int;
+V_booktype int;
+Begin
+p_days_from_due(v_readerid,v_bookid,v_days);
+Select booktype into v_booktype from book where bookid=v_bookid;
+Select readertype into v_readertype from reader where readerid=v_readerid;
+Select overtime*floor(abs(v_days)) into v_money from rule where readertype=v_readertype and booktype=v_booktype;
+Exception
+When others then
+v_money:=0;
+End;
+DELIMITER ;
+DELIMITER // 
+/*将超期未还的读者借阅权限关闭的存储过程；*/
+Create or replace procedure p_cant_borrow(v_readerid in int, v_bookid in int, v_right out int)
+As
+V_right int;
+V_due date;
+V_next_date num;
+Begin
+Select right into v_right from reader where readerid=v_readerid;
+v_due:=f_borrowed_num(v_readerid,v_bookid);
+v_next_date:= to_date(sysdate,'yyyymmdd')-to_date(v_due,'yyyymmdd');
+If v_next_date >=0 then v_right=0;
+Else
+v_right=1;
+End if;
+Exception
+When others then
+v_right=0;
+DELIMITER ;
+DELIMITER // 
+/*计算图书应归还日期的函数。*/
+Create or replace function f_date_is_due(v_readerid int,v_bookid int)
+Return varchar as
+V_booktype int;
+V_readertype int;
+V_date varchar(10);
+Begin
+Select booktype into v_booktype from book where bookid=v_bookid;
+Select readertype into v_readertype from reader where readerid=v_readerid;
+Select to_char(sysdate+days, 'yyyy-mm-dd') into v_date from rule where readertype=v_readertype and booktype=v_booktype;
+Return v_date;
+Exception
+When no_data_found then
+Select to_char(sysdate+30,’yyyy-mm-dd’) into v_date from dual;
+Return v_date;
+End;
+DELIMITER ;
+DELIMITER // 
+/*计算读者可借阅图书册数的函数*/
+Create or replace function f_rule_num(v_readerid in int,v_bookid in int) return int
+As
+V_booktype int;
+V_readertype int;
+V_num int;
+Begin
+Select booktype into v_booktype from book where bookid=v_bookid;
+Select readertype into v_readertype from reader where readerid=v_readerid;
+Select num into v_num from rule where readertype=v_readertype and booktype=v_booktype;
+Return v_num;
+Exception
+/*尚未制定该类图书借阅规则*/
+When no_data_found then
+select max(num) into v_num from rule;
+return v_num;
+End;
+DELIMITER ;
+DELIMITER // 
+/*计算读者已经借阅某类型图书的册数的函数*/
+Create or replace function f_borrowed_num(v_readerid int,v_bookid int)return int as
+V_num int;
+V_type int;
+Begin
+Select booktype into v_type from book where bookid=v_bookid;
+Select count(*) into v_num from book,borrow where book.bookid=borrow.bookid and readerid=v_readerid and booktype=v_type;
+Return v_num;
+End;
+DELIMITER ;
+DELIMITER // 
+/*计算读者应交欠费的函数*/
+create or replace function f_owned_money(v_readerid int)return int
+As
+v_fine float:=0.0;
+v_money float:=0.0;
+v_days int;
+v_borrow borrow%ROWTYPE;
+cursor c_borrow is select * from borrow where readerid=v_readerid;
+Begin
+  for v_borrow in c_borrow loop
+     p_days_from_due(v_borrow.readerid,v_borrow.bookid,v_days);
+     if (v_days<0) then
+        p_timeover_money(v_borrow.readerid,v_borrow.bookid,v_money);
+        v_fine:=v_fine+v_money;
+     end if;
+  end loop;
+  Return v_fine;
+End;
+DELIMITER ;
+DELIMITER // 
+/*删除藏书类型的触发器。*/
+Create or replace trigger tr_delete_booktype
+Before delete on book_type for each row
+begin
+delete from book where booktype=:old.typeid;
+delete from rule where booktype=:old.typeid;
+End;
+DELIMITER ;
+DELIMITER // 
+/*删除读者类型的触发器。*/
+Create or replace trigger tr_delete_readerype
+Before delete on reader_type for each row
+begin
+delete from reader where readertype=:old.typeid;
+delete from rule where readertype=:old.typeid;
+End;
+DELIMITER ;
+DELIMITER // 
+/*删除图书的触发器。*/
+Create or replace trigger tr_delete_book
+Before delete on book for each row
+begin
+delete from borrow where bookid=:old.bookid;
+delete from preconcert where bookid=:old.bookid;
+End;
+DELIMITER ;
+DELIMITER //
+/*删除读者的触发器。*/
+Create or replace trigger tr_delete_reader
+Before delete on reader for each row
+begin
+delete from borrow where readerid=:old.readerid;
+delete from preconcert where readerid=:old.readerid;
+End;
+DELIMITER ;
